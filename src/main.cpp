@@ -43,7 +43,8 @@ void playVexcodeSound(const char *soundName)
 
 // define variable for remote controller enable/disable
 bool RemoteControlCodeEnabled = true;
-double turnConstant = 31;
+const double TURN_CONSTANT = 36.5;
+const double K = 0.3;
 competition Competition = competition();
 
 // This is where you define your devices
@@ -54,10 +55,21 @@ motor frontLeft = motor(PORT2, ratio18_1, false);
 motor frontRight = motor(PORT3, ratio18_1, false);
 motor rearRight = motor(PORT4, ratio18_1, false);
 motor launcher = motor(PORT10, ratio18_1, false);
+motor intake = motor(PORT19, ratio36_1, false);
+motor test = motor(PORT20, ratio18_1, false);
 
 bumper buttonA = bumper(Brain.ThreeWirePort.A);
 bumper buttonB = bumper(Brain.ThreeWirePort.B);
 bumper launchSensor = bumper(Brain.ThreeWirePort.H);
+
+vision::signature REDBALL(1, 6467, 8623, 7545, -1037, -345, -691, 3.000, 0);
+vision::signature BLUETRIBALL(1, -4929, -3543, -4236, 6779, 10759, 8769, 2.500, 0);
+vision::signature SIG_3(3, 0, 0, 0, 0, 0, 0, 3.000, 0);
+vision::signature SIG_4(4, 0, 0, 0, 0, 0, 0, 3.000, 0);
+vision::signature SIG_5(5, 0, 0, 0, 0, 0, 0, 3.000, 0);
+vision::signature SIG_6(6, 0, 0, 0, 0, 0, 0, 3.000, 0);
+vision::signature SIG_7(7, 0, 0, 0, 0, 0, 0, 3.000, 0);
+vex::vision camera = vision(vex::PORT15, 50, REDBALL, BLUETRIBALL, SIG_3, SIG_4, SIG_5, SIG_6, SIG_7);
 
 //=============== CUSTOM METHOD SECTION =================================================================================================
 
@@ -139,7 +151,7 @@ void driveLeft(double time, double speed)
  */
 void turnRight(double time, double angle)
 {
-    double speed = (turnConstant / 90) * angle / time;
+    double speed = (TURN_CONSTANT / 90) * angle / time;
     rearRight.spin(forward, speed, percent);
     frontLeft.spin(forward, speed, percent);
     frontRight.spin(forward, speed, percent);
@@ -155,7 +167,7 @@ void turnRight(double time, double angle)
  */
 void turnLeft(double time, double angle)
 {
-    double speed = (turnConstant / 90) * angle / time;
+    double speed = (TURN_CONSTANT / 90) * angle / time;
     rearRight.spin(reverse, speed, percent);
     frontLeft.spin(reverse, speed, percent);
     frontRight.spin(reverse, speed, percent);
@@ -165,7 +177,26 @@ void turnLeft(double time, double angle)
 }
 
 /**
- * TWinds the catapult until it releases and triggers a button to stop it
+ * Turns the robot dependent on the sign of the value passed in
+ * @param speed the speed percentage at which the robot should turn. A positive speed value means turning right.
+ */
+void freeTurn(double speed)
+{
+    if (abs(speed) > 20 * K) // Turn robot PROPORTIONALLY
+    {
+        rearRight.spin(forward, speed, percent);
+        frontLeft.spin(forward, speed, percent);
+        frontRight.spin(forward, speed, percent);
+        rearLeft.spin(forward, speed, percent);
+    }
+    else
+    {
+        driveStop();
+    }
+}
+
+/**
+ * Winds the catapult until it releases and triggers a button to stop it
  */
 void launch()
 {
@@ -176,6 +207,34 @@ void launch()
     launcher.stop();
 }
 
+/**
+ * @param speed the percent speed at which the intake should spin inwards at
+ */
+void in(double speed)
+{
+    intake.spin(forward, speed, percent);
+}
+
+/**
+ * @param speed the percent speed at which the intake should pin outwards at
+ */
+void out(double speed)
+{
+    intake.spin(reverse, speed, percent);
+}
+
+double locateBall(vex::vision::signature s)
+{
+    // bool printOnce = false;
+    double difference = 0;
+    camera.takeSnapshot(s);
+    if (camera.objectCount > 0) // Is object within view?
+    {
+        difference = camera.largestObject.centerX - 158; // Finding difference
+    }
+    return difference;
+}
+
 //=============== AUTONOMOUS METHOD SECTION ==============================================================================================
 
 /**
@@ -183,7 +242,16 @@ void launch()
  */
 void runOnAutonomous()
 {
-    // Fill out here
+
+    int difference = 0;
+
+    while (true)
+    {
+        difference = locateBall(REDBALL);
+        printf("%f\n", difference);
+        freeTurn(difference * K);
+        wait(20, msec);
+    }
 }
 
 //=============== DRIVER CONTROL METHOD SECTION ========================================================================================
@@ -195,7 +263,8 @@ void runOnDriverControl()
 {
     Brain.Screen.print("Running driver control");
 
-    // define variable for remote controller enable/disable
+    // camera detection
+    int difference = 0;
     // define variables used for controlling motors based on controller inputs
     bool controller1LeftShoulderControlMotorsStopped = true;
     bool controller1RightShoulderControlMotorsStopped = true;
@@ -216,7 +285,7 @@ void runOnDriverControl()
     int rearRightMovement = 0;
     // motor cap
     const int totalSpeed = 80;
-    const double speedFactor = 5;
+    const double speedFactor = 1.25;
 
     // loop for robot moving :thumbsup:
     while (true)
@@ -224,6 +293,21 @@ void runOnDriverControl()
         longitudinalMovement = controller1.Axis3.position();
         horizontalMovement = controller1.Axis4.position();
         angularMovement = controller1.Axis1.position();
+
+        // if (controller1.ButtonRight.pressing())
+        // {
+        //     difference = locateBall(REDBALL);
+        // }
+        // else
+        // {
+        difference = locateBall(BLUETRIBALL);
+        // }
+
+        // Turn on auto detection for redball
+        if (controller1.ButtonDown.pressing())
+        {
+            angularMovement += difference * K;
+        }
 
         // The following code segment deals with the removal of joystick drift: deadbands
         if (longitudinalMovement < 5 && longitudinalMovement > -5)
@@ -313,10 +397,10 @@ void runOnDriverControl()
         // Optional drivetrain speed cutoff button
         if (controller1.ButtonB.pressing())
         {
-            rearLeftMovement /= 4;
-            frontLeftMovement /= 4;
-            frontRightMovement /= 4;
-            rearRightMovement /= 4;
+            rearLeftMovement /= 2;
+            frontLeftMovement /= 2;
+            frontRightMovement /= 2;
+            rearRightMovement /= 2;
         }
 
         // The following code segment deals with moving the drive motors using the calculated values
@@ -343,15 +427,34 @@ void runOnDriverControl()
             isDriveStopped = true;
         }
 
-        // Button A to launch any currently stored objects
-        if (controller1.ButtonA.pressing())
+        // Left and Right Bumper for intake
+        if (controller1.ButtonL1.pressing())
         {
-            launch();
+            in(40);
         }
+        else if (controller1.ButtonR1.pressing())
+        {
+            out(40);
+        }
+        else
+        {
+            intake.stop();
+        }
+
+        // For testing purposes only
+        if (buttonA.pressing())
+        {
+            test.spin(forward, 30, percent);
+        }
+        else if (buttonB.pressing())
+        {
+            test.spin(reverse, 30, percent);
+        }
+
+        // wait(20, msec);
     }
 
     // Waits before repeating the process
-    wait(20, msec);
 }
 
 //=============== MAIN METHOD SECTION ===========================================================================================================
