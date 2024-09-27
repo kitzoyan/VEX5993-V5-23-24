@@ -18,6 +18,7 @@
 #include <math.h>
 #include <string.h>
 #include "vex.h"
+#include <iostream>
 using namespace vex;
 // Brain should be defined by default
 brain Brain;
@@ -45,6 +46,8 @@ void playVexcodeSound(const char *soundName)
 bool RemoteControlCodeEnabled = true;
 const double TURN_CONSTANT = 36.5;
 const double K = 0.3;
+const double M = 1.05;
+bool reverseCam = true;
 competition Competition = competition();
 
 // This is where you define your devices
@@ -89,7 +92,7 @@ void driveStop()
  * @param time how long the robot should operate for
  * @param speed the speed percentage at which the robot should move at
  */
-void driveFoward(double time, double speed)
+void driveForward(double time, double speed)
 {
     rearRight.spin(reverse, speed, percent);
     frontLeft.spin(forward, speed, percent);
@@ -97,6 +100,18 @@ void driveFoward(double time, double speed)
     rearLeft.stop();
     wait(time, sec);
     driveStop();
+}
+
+/**
+ * Drives the robot in the forward direction according to the robot orientation
+ * @param speed the speed percentage at which the robot should move at
+ */
+void driveForward(double speed)
+{
+    rearRight.spin(reverse, speed, percent);
+    frontLeft.spin(forward, speed, percent);
+    frontRight.stop();
+    rearLeft.stop();
 }
 
 /**
@@ -202,7 +217,7 @@ void launch()
 {
     while (!launchSensor.pressing())
     {
-        launcher.spin(reverse, 40, percent);
+        launcher.spin(forward, 40, percent);
     }
     launcher.stop();
 }
@@ -212,7 +227,7 @@ void launch()
  */
 void in(double speed)
 {
-    intake.spin(forward, speed, percent);
+    intake.spin(reverse, speed, percent);
 }
 
 /**
@@ -220,38 +235,137 @@ void in(double speed)
  */
 void out(double speed)
 {
-    intake.spin(reverse, speed, percent);
+    intake.spin(forward, speed, percent);
 }
 
-double locateBall(vex::vision::signature s)
+/**
+ * Takes a snapshot the the given signature, returning the distance of the object, if it exists, to the center of the camera
+ * @param s the signature to be detected
+ * @return a double value of the difference of the center of object from center of camera. A positive value means the object is to the right of the center if
+ * Only when reverse = false.
+ */
+double locateBall(vex::vision::signature s, double area)
 {
     // bool printOnce = false;
     double difference = 0;
     camera.takeSnapshot(s);
-    if (camera.objectCount > 0) // Is object within view?
+    if (camera.objectCount > 0 && camera.largestObject.width * camera.largestObject.height > area) // Is object within view?
     {
-        difference = camera.largestObject.centerX - 158; // Finding difference
+        // difference = camera.largestObject.centerX - 158; // Finding difference
+        difference = (!reverseCam ? camera.largestObject.centerX - 158 : 158 - camera.largestObject.centerX);
     }
     return difference;
 }
 
+/**
+ * Locates the largest object and travels to it. Assume an object is in range.
+ * IT IS BUGGED RIGHT NOW
+ */
+void goToBall(vex::vision::signature s)
+{
+    double difference = locateBall(s, 50 * 50);
+    while (true)
+    {
+        if (abs(difference) >= 5)
+        {
+            freeTurn(difference * K);
+        }
+        else
+        {
+            // if(colour sensing not detected)
+            driveForward(40); // Probably a good place to implement PID
+            in(40);
+            wait(2, sec);
+            // else {stop, return}
+            driveStop();
+            intake.stop();
+            return;
+        }
+    }
+}
+
+/**
+ * Tests PID control system. This is not really needed for the slow power of VEX doesn't really require precise movement.
+ */
+void pidTuning()
+{
+    double deltaT = 20;
+    int vDiff = 0;
+    double speedPercent = 0;
+    double vCurrent = 0;
+    double vPast = 0;
+    double deltaV = 0;
+    double vROC = 0; // Rate of change for delta t in 20 ms
+    double vArea = 0;
+    const double SET_POINT = 50; // rpm
+    const double KP = 0.05;
+    const double KI = 0;
+    const double KD = 0;
+    while (true)
+    {
+        vCurrent = test.velocity(rpm);
+        Brain.Screen.print(vCurrent);
+
+        vDiff = vCurrent - SET_POINT;
+        deltaV = vCurrent - vPast;
+        vROC = deltaV / deltaT;
+        vArea = (vCurrent - SET_POINT) * deltaT - deltaV * deltaT / 2;
+
+        speedPercent += -(vArea * KI) - vROC * KD - vDiff * KP;
+
+        test.spin(forward, speedPercent, percent);
+
+        vPast = vCurrent;
+
+        std::cout << Brain.Timer.value() << " , "
+                  << test.velocity(rpm) << " , " << test.torque(Nm) << " , "
+                  << test.current() << " , " << test.voltage(volt)
+                  << std::endl;
+
+        wait(deltaT, msec);
+        Brain.Screen.clearLine();
+    }
+}
+
 //=============== AUTONOMOUS METHOD SECTION ==============================================================================================
+
+// Assum we always have a preload
+
+/**
+ * On the offensive side of our alliance, drive forward near the autonomous line, turn right, and eject tri ball into goal
+ */
+void preloadStraight(bool useVision)
+{
+    driveForward(3, 50 * M); // Drive near auto line
+    wait(0.5, sec);
+    turnRight(1, 90);
+    wait(0.5, sec);
+    driveForward(1, 5 * M); // Go up to goal
+    wait(0.5, sec);
+    out(40); // Eject
+    wait(2, sec);
+    intake.stop();
+    if (!useVision)
+    {
+        return;
+    }
+    else
+    {
+        driveBackward(1, 5 * M);
+        wait(0.5, sec);
+        turnRight(2, 160); // Face ball near long barrier
+        wait(0.5, sec);
+        driveForward(1, 40); // Approach ball
+        goToBall(BLUETRIBALL);
+    }
+}
 
 /**
  * Contains robot commands for what is to be run during autonomous mode
  */
 void runOnAutonomous()
 {
-
-    int difference = 0;
-
-    while (true)
-    {
-        difference = locateBall(REDBALL);
-        printf("%f\n", difference);
-        freeTurn(difference * K);
-        wait(20, msec);
-    }
+    preloadStraight(true);
 }
 
 //=============== DRIVER CONTROL METHOD SECTION ========================================================================================
@@ -284,12 +398,14 @@ void runOnDriverControl()
     int frontRightMovement = 0;
     int rearRightMovement = 0;
     // motor cap
-    const int totalSpeed = 80;
-    const double speedFactor = 1.25;
+    const int TOTAL_SPEED = 80;
+    const double SPEED_FACTOR = 1.25;
+    double velocity = 0;
 
     // loop for robot moving :thumbsup:
     while (true)
     {
+
         longitudinalMovement = controller1.Axis3.position();
         horizontalMovement = controller1.Axis4.position();
         angularMovement = controller1.Axis1.position();
@@ -300,7 +416,7 @@ void runOnDriverControl()
         // }
         // else
         // {
-        difference = locateBall(BLUETRIBALL);
+        difference = locateBall(BLUETRIBALL, 50 * 50);
         // }
 
         // Turn on auto detection for redball
@@ -351,47 +467,47 @@ void runOnDriverControl()
 
         // The following code segment deals with calculating motor speeds based on joystick input
         rearLeftMovement = -horizontalMovement + angularMovement;
-        rearLeftMovement /= speedFactor;
-        if (rearLeftMovement > totalSpeed)
+        rearLeftMovement /= SPEED_FACTOR;
+        if (rearLeftMovement > TOTAL_SPEED)
         {
-            rearLeftMovement = totalSpeed;
+            rearLeftMovement = TOTAL_SPEED;
         }
-        else if (rearLeftMovement < -totalSpeed)
+        else if (rearLeftMovement < -TOTAL_SPEED)
         {
-            rearLeftMovement = -totalSpeed;
+            rearLeftMovement = -TOTAL_SPEED;
         }
 
         frontLeftMovement = longitudinalMovement + angularMovement;
-        frontLeftMovement /= speedFactor;
-        if (frontLeftMovement > totalSpeed)
+        frontLeftMovement /= SPEED_FACTOR;
+        if (frontLeftMovement > TOTAL_SPEED)
         {
-            frontLeftMovement = totalSpeed;
+            frontLeftMovement = TOTAL_SPEED;
         }
-        else if (frontLeftMovement < -totalSpeed)
+        else if (frontLeftMovement < -TOTAL_SPEED)
         {
-            frontLeftMovement = -totalSpeed;
+            frontLeftMovement = -TOTAL_SPEED;
         }
 
         frontRightMovement = horizontalMovement + angularMovement;
-        frontRightMovement /= speedFactor;
-        if (frontRightMovement > totalSpeed)
+        frontRightMovement /= SPEED_FACTOR;
+        if (frontRightMovement > TOTAL_SPEED)
         {
-            frontRightMovement = totalSpeed;
+            frontRightMovement = TOTAL_SPEED;
         }
-        else if (frontRightMovement < -totalSpeed)
+        else if (frontRightMovement < -TOTAL_SPEED)
         {
-            frontRightMovement = -totalSpeed;
+            frontRightMovement = -TOTAL_SPEED;
         }
 
         rearRightMovement = -(longitudinalMovement) + angularMovement;
-        rearRightMovement /= speedFactor;
-        if (rearRightMovement > totalSpeed)
+        rearRightMovement /= SPEED_FACTOR;
+        if (rearRightMovement > TOTAL_SPEED)
         {
-            rearRightMovement = totalSpeed;
+            rearRightMovement = TOTAL_SPEED;
         }
-        else if (rearRightMovement < -totalSpeed)
+        else if (rearRightMovement < -TOTAL_SPEED)
         {
-            rearRightMovement = -totalSpeed;
+            rearRightMovement = -TOTAL_SPEED;
         }
 
         // Optional drivetrain speed cutoff button
@@ -428,7 +544,7 @@ void runOnDriverControl()
         }
 
         // Left and Right Bumper for intake
-        if (controller1.ButtonL1.pressing())
+        if (controller1.ButtonR2.pressing())
         {
             in(40);
         }
@@ -444,11 +560,15 @@ void runOnDriverControl()
         // For testing purposes only
         if (buttonA.pressing())
         {
-            test.spin(forward, 30, percent);
+            test.spin(forward, 100, percent);
         }
         else if (buttonB.pressing())
         {
-            test.spin(reverse, 30, percent);
+            test.spin(reverse, 100, percent);
+        }
+        else
+        {
+            test.stop();
         }
 
         // wait(20, msec);
